@@ -1,0 +1,8 @@
+{
+  "domain": "zerotier",
+  "name": "ZeroTier",
+  "plugin_api": 1,
+  "config_flow": true,
+  "iot_class": "cloud_polling",
+  "documentation": "https://github.com/magnusdunker/thehome-zerotier"
+}
