@@ -6,7 +6,7 @@ mod host;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use thehome_zerotier::api::{ApiError, Client};
+use thehome_zerotier::api::{ApiError, Client, Version};
 use thehome_zerotier::model::{self, Member, Network};
 use wiremock::matchers::{any, body_json, header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -114,7 +114,7 @@ fn first_members() -> Vec<Value> {
 async fn api_client() {
     let server = MockServer::start().await;
     mock_central(&server, first_members()).await;
-    let c = Client::new(&server.uri(), TOKEN);
+    let c = Client::new(Version::V1, &server.uri(), TOKEN);
     let nets = c.networks().await.unwrap();
     assert_eq!(nets.len(), 2);
     assert_eq!(nets[1].name(), "Arbejde");
@@ -127,9 +127,9 @@ async fn api_client() {
     let posted = server.received_requests().await.unwrap().into_iter().find(|r| r.method.as_str() == "POST").unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&posted.body).unwrap(), json!({ "config": { "authorized": false } }));
 
-    let bad = Client::new(&server.uri(), "nope");
+    let bad = Client::new(Version::V1, &server.uri(), "nope");
     assert!(matches!(bad.networks().await, Err(ApiError::Auth)));
-    let down = Client::new("http://127.0.0.1:9", TOKEN);
+    let down = Client::new(Version::V1, "http://127.0.0.1:9", TOKEN);
     assert!(matches!(down.networks().await, Err(ApiError::Other(_))));
 }
 
@@ -140,7 +140,7 @@ async fn post_body_is_only_authorized() {
         .respond_with(ResponseTemplate::new(200).set_body_json(member(NET, "a1b2c3d4e5", "Laptop", true, 0)))
         .expect(1)
         .mount(&server).await;
-    Client::new(&server.uri(), TOKEN).set_authorized(NET, "a1b2c3d4e5", true).await.unwrap();
+    Client::new(Version::V1, &server.uri(), TOKEN).set_authorized(NET, "a1b2c3d4e5", true).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -149,7 +149,8 @@ async fn plugin_flow() {
     mock_central(&server, first_members()).await;
     let h = host::FakeHost::start(thehome_zerotier::ZeroTier::default());
     let flow = |source: &str, data: Value| json!({ "flow_id": "f1", "source": source, "data": data });
-    let start = json!({ "api_url": server.uri() });
+    // New Central is tried first; on this mock it answers 401
+    let start = json!({ "api_url": server.uri(), "api_v2_url": format!("{}/v2", server.uri()) });
 
     let r = h.call("config_flow", json!({ "flow": flow("user", start.clone()), "step": "user", "input": null })).await.unwrap();
     assert_eq!(r["result"]["type"], "form");
@@ -157,9 +158,9 @@ async fn plugin_flow() {
     assert_eq!(keys, ["api_token"]);
 
     let r = h.call("config_flow", json!({ "flow": flow("user", start.clone()), "step": "user", "input": { "api_token": "nope" } })).await.unwrap();
-    assert_eq!(r["result"]["errors"]["base"], "invalid_auth");
+    assert_eq!(r["result"]["errors"]["base"], "invalid_token");
     let r = h
-        .call("config_flow", json!({ "flow": flow("user", json!({ "api_url": "http://127.0.0.1:9" })), "step": "user", "input": { "api_token": TOKEN } }))
+        .call("config_flow", json!({ "flow": flow("user", json!({ "api_url": "http://127.0.0.1:9", "api_v2_url": "http://127.0.0.1:9" })), "step": "user", "input": { "api_token": TOKEN } }))
         .await
         .unwrap();
     assert_eq!(r["result"]["errors"]["base"], "cannot_connect");
@@ -169,6 +170,7 @@ async fn plugin_flow() {
     assert_eq!(r["result"]["step_id"], "networks");
     assert_eq!(r["unique_id"], "user-1");
     assert_eq!(r["data"]["api_token"], TOKEN);
+    assert_eq!(r["data"]["api"], "v1");
     let prop = &r["result"]["schema"]["properties"]["networks"];
     assert_eq!(prop["default"], json!([NET, NET2]));
     assert_eq!(prop["items"]["oneOf"][0], json!({ "const": NET, "title": format!("Hjem ({NET})") }));
@@ -187,18 +189,18 @@ async fn plugin_flow() {
     let mut reauth = flow("reauth", start.clone());
     reauth["entry"] = json!({ "entry_id": "e1", "data": { "api_token": "old", "networks": [NET] } });
     let r = h.call("config_flow", json!({ "flow": reauth, "step": "user", "input": { "api_token": TOKEN } })).await.unwrap();
-    assert_eq!(r["result"]["data"], json!({ "api_token": TOKEN, "networks": [NET] }));
+    assert_eq!(r["result"]["data"], json!({ "api_token": TOKEN, "networks": [NET], "api": "v1" }));
 
     // options: change the networks
     let mut opts = flow("options", json!({}));
-    opts["entry"] = json!({ "entry_id": "e1", "data": { "api_token": TOKEN, "api_url": server.uri() }, "options": { "networks": [NET] } });
+    opts["entry"] = json!({ "entry_id": "e1", "data": { "api_token": TOKEN, "api_url": server.uri(), "api": "v1" }, "options": { "networks": [NET] } });
     let r = h.call("options_flow", json!({ "flow": opts, "step": "options", "input": null })).await.unwrap();
     assert_eq!(r["result"]["schema"]["properties"]["networks"]["default"], json!([NET]));
     let r = h.call("options_flow", json!({ "flow": opts, "step": "networks", "input": { "networks": [NET, NET2] } })).await.unwrap();
     assert_eq!(r["result"]["data"], json!({}));
 
     let e = h
-        .call("setup_entry", json!({ "entry": { "entry_id": "e1", "domain": "zerotier", "data": { "api_token": "nope", "api_url": server.uri() }, "options": {} } }))
+        .call("setup_entry", json!({ "entry": { "entry_id": "e1", "domain": "zerotier", "data": { "api_token": "nope", "api_url": server.uri(), "api_v2_url": format!("{}/v2", server.uri()) }, "options": {} } }))
         .await
         .unwrap_err();
     assert_eq!(e["data"]["kind"], "auth_failed");
@@ -220,7 +222,7 @@ async fn plugin_setup_and_control() {
     mock_central(&server, first_members()).await;
     let h = host::FakeHost::start(thehome_zerotier::ZeroTier::default());
     let entry = json!({ "entry_id": "e1", "domain": "zerotier", "title": "ZeroTier",
-                        "data": { "api_token": TOKEN, "api_url": server.uri(), "poll_seconds": 0.3 },
+                        "data": { "api_token": TOKEN, "api_url": server.uri(), "api_v2_url": format!("{}/v2", server.uri()), "poll_seconds": 0.3 },
                         "options": { "networks": [NET] } });
     h.call("setup_entry", json!({ "entry": entry })).await.unwrap();
 
@@ -312,4 +314,99 @@ async fn plugin_setup_and_control() {
 
 fn h_entity(rec: &host::Recorded, unique_id: &str) -> String {
     rec.entities.iter().find(|(_, (spec, _))| spec["unique_id"] == unique_id).map(|(k, _)| k.clone()).unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// New Central (v2)
+
+fn v2_member(node: &str, name: &str, status: &str, seen_ago_ms: i64) -> Value {
+    let seen = chrono::DateTime::from_timestamp_millis(now() - seen_ago_ms).unwrap().to_rfc3339();
+    json!({
+        "deviceId": node, "networkId": NET, "name": name, "description": "", "status": status, "activeBridge": false,
+        "ipv4Assignments": ["10.0.0.7"], "ipv6Assignments": ["fd00::7"], "ipAssignment6plane": "", "ipAssignmentRfc4193": "",
+        "noAutoAssignIps": false, "capabilities": [], "tags": [], "creationTime": "2026-01-01T00:00:00Z",
+        "lastModified": "2026-01-01T00:00:00Z", "identity": "x", "revision": 3, "agentVersion": "1.16.0",
+        "macAddress": "aa:bb:cc:dd:ee:ff", "lastSeen": {}, "lastSeenIp": "198.51.100.9", "lastSeenTime": seen,
+        "os": "linux", "arch": "arm64"
+    })
+}
+
+/// New Central under /v2; Legacy under / rejects everything.
+async fn mock_new_central(server: &MockServer) {
+    Mock::given(any()).respond_with(ResponseTemplate::new(401)).with_priority(10).mount(server).await;
+    let auth = || header("Authorization", format!("Bearer {TOKEN}").as_str());
+    Mock::given(method("GET")).and(path("/v2/network")).and(auth())
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "items": [
+            { "id": NET, "name": "Hjem", "networkGroupId": "g", "networkGroupName": "Standard", "kind": "v1", "description": "" }
+        ] })))
+        .mount(server).await;
+    Mock::given(method("GET")).and(path(format!("/v2/network/{NET}/member"))).and(auth())
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            v2_member("a1b2c3d4e5", "Pi", "authorized", 30_000),
+            v2_member("0f0f0f0f0f", "", "rejected", 30_000)
+        ])))
+        .mount(server).await;
+    Mock::given(method("POST")).and(path(format!("/v2/network/{NET}/member/a1b2c3d4e5/de-authorize"))).and(auth())
+        .respond_with(ResponseTemplate::new(200).set_body_json(v2_member("a1b2c3d4e5", "Pi", "not_authorized", 30_000)))
+        .mount(server).await;
+}
+
+#[tokio::test]
+async fn new_central_mapping() {
+    let m = serde_json::from_value::<thehome_zerotier::api::V2Member>(v2_member("a1b2c3d4e5", "Pi", "authorized", 10_000)).unwrap().into_member();
+    assert_eq!(m.node(), "a1b2c3d4e5");
+    assert!(m.config.authorized);
+    assert_eq!(m.config.ip_assignments, ["10.0.0.7", "fd00::7"]);
+    assert!(m.is_online(now()));
+    assert_eq!(m.version().as_deref(), Some("1.16.0"));
+    assert_eq!(m.physical_ip(), Some("198.51.100.9"));
+    let rejected = serde_json::from_value::<thehome_zerotier::api::V2Member>(json!({ "deviceId": "x", "status": "rejected" })).unwrap().into_member();
+    assert!(!rejected.config.authorized);
+    assert_eq!(rejected.last_contact(), None);
+
+    let server = MockServer::start().await;
+    mock_new_central(&server).await;
+    let v2 = format!("{}/v2", server.uri());
+    let (c, nets) = Client::detect(&server.uri(), &v2, TOKEN).await.unwrap();
+    assert_eq!(c.version(), Version::V2);
+    assert_eq!(nets[0].name(), "Hjem");
+    assert!(matches!(Client::detect(&server.uri(), &v2, "nope").await, Err(ApiError::Auth)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_new_central() {
+    let server = MockServer::start().await;
+    mock_new_central(&server).await;
+    let h = host::FakeHost::start(thehome_zerotier::ZeroTier::default());
+    let urls = json!({ "api_url": server.uri(), "api_v2_url": format!("{}/v2", server.uri()) });
+    let r = h
+        .call("config_flow", json!({ "flow": { "flow_id": "f", "source": "user", "data": urls }, "step": "user", "input": { "api_token": TOKEN } }))
+        .await
+        .unwrap();
+    // one network: done right away
+    assert_eq!(r["result"]["type"], "create_entry");
+    assert_eq!(r["result"]["data"]["api"], "v2");
+    assert!(r.get("unique_id").is_none_or(Value::is_null));
+
+    let entry = json!({ "entry_id": "e2", "domain": "zerotier", "data": r["result"]["data"], "options": {} });
+    h.call("setup_entry", json!({ "entry": entry })).await.unwrap();
+    let pi = |k: &str| format!("{NET}-a1b2c3d4e5-{k}");
+    assert_eq!(h.state_of(&pi("online")).unwrap().0, "on");
+    assert_eq!(h.state_of(&pi("authorized")).unwrap().0, "on");
+    assert_eq!(h.state_of(&pi("ip")).unwrap().0, "10.0.0.7");
+    assert_eq!(h.state_of(&format!("{NET}-0f0f0f0f0f-authorized")).unwrap().0, "off");
+    assert_eq!(h.state_of(&format!("{NET}-online_members")).unwrap().0, "1");
+
+    let call = json!({ "entry_id": "e2", "entity_id": h.entity(&pi("authorized")), "service": "turn_off", "data": {} });
+    h.call("entity/call_service", call).await.unwrap();
+    assert_eq!(h.state_of(&pi("authorized")).unwrap().0, "off");
+    let posted: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .map(|r| r.url.path().to_string())
+        .collect();
+    assert_eq!(posted, [format!("/v2/network/{NET}/member/a1b2c3d4e5/de-authorize")]);
 }

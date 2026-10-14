@@ -12,7 +12,12 @@ https://github.com/magnusdunker/thehome-zerotier
 
 og tryk **Installér**. Tilføj derefter **ZeroTier** under **Tilføj integration**.
 
-Integrationen skal bruge et API-token. Lav det på [my.zerotier.com](https://my.zerotier.com) under **Account → API Access Tokens**, og indsæt det i TheHome. Har kontoen flere netværk, vælger du bagefter, hvilke der skal med. Står alle valgt, kommer netværk, du laver senere, også med. Valget kan ændres under integrationens indstillinger.
+Integrationen skal bruge et API-token. ZeroTier har to udgaver af Central, og begge virker:
+
+- **Nye Central** (central.zerotier.com): lav en service account under **Organization → Service Accounts**, og lav et API-token til den. ZeroTier kræver mindst Essential-abonnementet for det.
+- **Ældre Central** (my.zerotier.com): lav et token under **Account → API Access Tokens**.
+
+Integrationen finder selv ud af, hvilken af dem tokenet hører til. Har kontoen flere netværk, vælger du bagefter, hvilke der skal med. Står alle valgt, kommer netværk, du laver senere, også med. Valget kan ændres under integrationens indstillinger.
 
 ## Hvad du får
 

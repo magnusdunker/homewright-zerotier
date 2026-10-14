@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use thehome_plugin::{async_trait, json, Device, Entity, Entry, Error, Flow, FlowReply, Host, Integration, Map, Value};
 
-use api::{ApiError, Client};
+use api::{ApiError, Client, Version};
 use model::{Member, Network};
 
 pub const DOMAIN: &str = "zerotier";
@@ -45,7 +45,7 @@ fn token_schema() -> Value {
         "properties": {
             "api_token": {
                 "type": "string", "format": "password", "title": "API-token",
-                "description": "Lav et på my.zerotier.com under Account → API Access Tokens"
+                "description": "Et API-token fra en service account (Organization → Service Accounts på central.zerotier.com) eller et ældre token fra Account → API Access Tokens på my.zerotier.com"
             }
         }
     })
@@ -71,14 +71,24 @@ fn now_ms() -> i64 {
 
 fn error_code(e: &ApiError) -> &'static str {
     match e {
-        ApiError::Auth => "invalid_auth",
+        ApiError::Auth => "invalid_token",
         ApiError::Other(_) => "cannot_connect",
     }
 }
 
-fn base_url(get: impl Fn(&str) -> Option<String>) -> String {
-    // tests point this at a mock server
-    get("api_url").unwrap_or_else(|| api::BASE_URL.to_string())
+/// Talk to Central with the API stored in `api`, or find the one the token
+/// belongs to. Tests put mock URLs in `api_url` and `api_v2_url`.
+async fn connect(get: impl Fn(&str) -> Option<String>, token: &str) -> Result<(Client, Vec<Network>), ApiError> {
+    let v1 = get("api_url").unwrap_or_else(|| api::V1_URL.to_string());
+    let v2 = get("api_v2_url").unwrap_or_else(|| api::V2_URL.to_string());
+    match get("api").as_deref().and_then(Version::parse) {
+        Some(version) => {
+            let client = Client::new(version, if version == Version::V1 { &v1 } else { &v2 }, token);
+            let networks = client.networks().await?;
+            Ok((client, networks))
+        }
+        None => Client::detect(&v1, &v2, token).await,
+    }
 }
 
 fn str_list(v: &Value) -> Option<Vec<String>> {
@@ -119,9 +129,9 @@ impl Integration for ZeroTier {
             ("user", None) | ("reauth", None) => Ok(FlowReply::form("user", token_schema())),
             ("user", Some(v)) => {
                 let token = v["api_token"].as_str().unwrap_or_default().trim().to_string();
-                let client = Client::new(&base_url(|k| flow.data.get(k).and_then(Value::as_str).map(String::from)), &token);
-                let networks = match client.networks().await {
-                    Ok(n) => n,
+                // a new token may belong to the other API, so always detect
+                let (client, networks) = match connect(|k| (k != "api").then(|| flow.data.get(k).and_then(Value::as_str).map(String::from)).flatten(), &token).await {
+                    Ok(c) => c,
                     Err(e) => {
                         info!("{e}");
                         return Ok(FlowReply::form_with_errors("user", token_schema(), json!({ "base": error_code(&e) })));
@@ -130,6 +140,7 @@ impl Integration for ZeroTier {
                 if flow.source == "reauth" {
                     let mut data = flow.entry.as_ref().and_then(|e| e.data.as_object().cloned()).unwrap_or_default();
                     data.insert("api_token".into(), json!(token));
+                    data.insert("api".into(), json!(client.version().as_str()));
                     return Ok(FlowReply::create("", Value::Object(data)));
                 }
                 if networks.is_empty() {
@@ -137,6 +148,7 @@ impl Integration for ZeroTier {
                 }
                 let mut data = flow.data.clone();
                 data.insert("api_token".into(), json!(token));
+                data.insert("api".into(), json!(client.version().as_str()));
                 let user = client.user_id().await.ok().flatten();
                 if networks.len() == 1 {
                     let reply = FlowReply::create("ZeroTier", Value::Object(data));
@@ -154,8 +166,7 @@ impl Integration for ZeroTier {
             }
             ("networks", Some(v)) => {
                 let token = flow.data.get("api_token").and_then(Value::as_str).unwrap_or_default();
-                let client = Client::new(&base_url(|k| flow.data.get(k).and_then(Value::as_str).map(String::from)), token);
-                let networks = client.networks().await.map_err(Error::failed)?;
+                let (_, networks) = connect(|k| flow.data.get(k).and_then(Value::as_str).map(String::from), token).await.map_err(Error::failed)?;
                 let mut data = flow.data.clone();
                 match chosen(&v, &networks) {
                     Err(()) => {
@@ -176,12 +187,11 @@ impl Integration for ZeroTier {
 
     async fn options_flow(&self, _host: &Host, flow: Flow, _step: &str, input: Option<Value>) -> Result<FlowReply, Error> {
         let Some(entry) = flow.entry.as_ref() else { return Ok(FlowReply::abort("unknown")) };
-        let client = Client::new(&base_url(|k| entry.get_str(k).map(String::from)), entry.get_str("api_token").unwrap_or_default());
-        let networks = match client.networks().await {
+        let networks = match connect(|k| entry.get_str(k).map(String::from), entry.get_str("api_token").unwrap_or_default()).await.map(|c| c.1) {
             Ok(n) => n,
             Err(e) => {
                 info!("{e}");
-                return Ok(FlowReply::abort(if matches!(e, ApiError::Auth) { "invalid_auth" } else { "cannot_connect" }));
+                return Ok(FlowReply::abort(if matches!(e, ApiError::Auth) { "invalid_token" } else { "cannot_connect" }));
             }
         };
         let current = selection(entry).unwrap_or_else(|| networks.iter().map(|n| n.id.clone()).collect());
@@ -197,9 +207,9 @@ impl Integration for ZeroTier {
     async fn setup_entry(&self, host: &Host, entry: Entry) -> Result<(), Error> {
         let entry_id = entry.entry_id.clone();
         let token = entry.get_str("api_token").filter(|t| !t.is_empty()).ok_or_else(|| Error::auth_failed("API-token mangler"))?;
-        let client = Client::new(&base_url(|k| entry.get_str(k).map(String::from)), token);
-        let networks = match client.networks().await {
-            Ok(n) => n,
+        // entries from v0.1.0 have no `api`; they find it here
+        let (client, networks) = match connect(|k| entry.get_str(k).map(String::from), token).await {
+            Ok(c) => c,
             Err(ApiError::Auth) => return Err(Error::auth_failed("ZeroTier afviste API-tokenet")),
             Err(e) => return Err(Error::not_ready(e)),
         };
