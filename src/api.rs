@@ -111,6 +111,14 @@ impl Client {
             .map_err(|e| ApiError::Other(format!("{what}: {}", without_url(&e))))?;
         let status = res.status();
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            // ZeroTier's answer says why; it never contains the token
+            let body = res.text().await.unwrap_or_default();
+            let body: String = body.trim().chars().take(300).collect();
+            let api = match self.version {
+                Version::V1 => "Legacy Central (v1)",
+                Version::V2 => "New Central (v2)",
+            };
+            crate::warn!("{api} afviste tokenet ({} tegn) ved {what}: HTTP {status} {body}", self.token.len());
             return Err(ApiError::Auth);
         }
         if !status.is_success() {

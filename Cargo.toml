@@ -1,6 +1,6 @@
 [package]
 name = "thehome-zerotier"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 description = "ZeroTier-netværk og -medlemmer som ekstern integration til TheHome"
