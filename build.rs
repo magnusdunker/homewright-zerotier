@@ -58,6 +58,10 @@ fn main() {
             b.define("ADD_EXPORTS", "1").define("STATICLIB", None).define("MINIUPNP_STATICLIB", None).define("NOMINMAX", None);
             b.define("_CRT_SECURE_NO_WARNINGS", None);
         }
+        // as CMake does for MSVC; MinGW defines WIN32 itself
+        if msvc {
+            b.define("WIN32", None).define("_WINDOWS", None);
+        }
         if !msvc {
             b.flag_if_supported("-w");
         }
