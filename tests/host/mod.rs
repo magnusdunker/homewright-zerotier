@@ -18,6 +18,8 @@ pub struct Recorded {
     pub states: HashMap<String, (String, Value)>,
     /// open issues
     pub issues: Vec<String>,
+    /// entry/update calls
+    pub updates: Vec<Value>,
 }
 
 pub struct FakeHost {
@@ -138,6 +140,10 @@ fn answer(rec: &Mutex<Recorded>, method: &str, p: &Value) -> Value {
         "issue/delete" => {
             let id = p["issue_id"].as_str().unwrap_or("");
             rec.issues.retain(|i| i != id);
+            Value::Null
+        }
+        "entry/update" => {
+            rec.updates.push(p.clone());
             Value::Null
         }
         _ => Value::Null,

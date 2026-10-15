@@ -1,0 +1,2 @@
+# keep vendored sources byte for byte
+vendor/** -text

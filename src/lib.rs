@@ -1,13 +1,18 @@
-//! ZeroTier: networks and their members from ZeroTier Central, as an
-//! external integration for TheHome.
+//! ZeroTier for TheHome, as an external integration. Two ways to set it up:
 //!
-//! The user pastes an API token from my.zerotier.com and picks networks. Each
-//! network becomes a device with member counts; each member becomes a device
-//! connected through its network, with an online sensor, a switch that
-//! authorizes it, last seen, ZeroTier IP and client version.
+//! - This machine (the default): the plugin is itself a ZeroTier node,
+//!   built in with libzt. The user enters a network id and approves the
+//!   node's address in ZeroTier Central. Connections to the node's ZeroTier
+//!   address are forwarded to TheHome, so TheHome can be reached over
+//!   ZeroTier with nothing installed on the machine. See [`node`].
+//! - ZeroTier Central: with an API token, networks and their members as
+//!   devices, with a switch that authorizes each member.
 
 pub mod api;
 pub mod model;
+pub mod node;
+pub mod proxy;
+pub mod zt;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,6 +23,7 @@ use thehome_plugin::{async_trait, json, Device, Entity, Entry, Error, Flow, Flow
 
 use api::{ApiError, Client, Version};
 use model::{Member, Network};
+use node::{Backend, Link};
 
 pub const DOMAIN: &str = "zerotier";
 const POLL: Duration = Duration::from_secs(60);
@@ -111,59 +117,225 @@ fn selection(entry: &Entry) -> Option<Vec<String>> {
     str_list(&entry.options["networks"]).or_else(|| entry.get("networks").and_then(str_list))
 }
 
-#[derive(Default)]
+/// Menu choices. TheHome shows a choice without a translation with `_` and
+/// `-` as spaces.
+const MENU_NODE: &str = "Denne_maskine";
+const MENU_CENTRAL: &str = "ZeroTier_Central_API-token";
+
+fn node_schema(port: u16, description: Option<&str>) -> Value {
+    let mut s = json!({
+        "type": "object",
+        "required": ["network_id", "port"],
+        "properties": {
+            "network_id": {
+                "type": "string", "title": "Netværks-id", "pattern": "^\\s*[0-9a-fA-F]{16}\\s*$",
+                "description": "De 16 tegn, netværket har i ZeroTier Central, f.eks. 8056c2e21c000001"
+            },
+            "port": {
+                "type": "integer", "title": "TheHomes port", "default": port, "minimum": 1, "maximum": 65535,
+                "description": "Forbindelser til TheHomes ZeroTier-adresse på denne port sendes videre til TheHome"
+            }
+        }
+    });
+    if let Some(d) = description {
+        s["description"] = json!(d);
+    }
+    s
+}
+
+fn node_options_schema(port: u16, extra: &[u16]) -> Value {
+    let extra: Vec<String> = extra.iter().map(u16::to_string).collect();
+    json!({
+        "type": "object",
+        "required": ["port"],
+        "properties": {
+            "port": {
+                "type": "integer", "title": "TheHomes port", "default": port, "minimum": 1, "maximum": 65535,
+                "description": "Forbindelser til TheHomes ZeroTier-adresse på denne port sendes videre til TheHome"
+            },
+            "extra_ports": {
+                "type": "string", "title": "Ekstra porte", "default": extra.join(", "),
+                "description": "Andre porte på denne maskine, der også skal kunne nås over ZeroTier, adskilt af komma, f.eks. 1883, 8080"
+            }
+        }
+    })
+}
+
+fn approve_schema(address: &str, network: u64, port: u16, net: Option<&zt::NetInfo>) -> Value {
+    let nwid = node::network_hex(network);
+    let text = match net.filter(|n| n.status == "OK") {
+        Some(n) => format!(
+            "TheHome er med i netværket {} med ZeroTier-IP {}.\n\nTryk Send for at gøre opsætningen færdig. TheHome kan nås på den IP, port {port}.",
+            node::title(network, Some(&n.name)).trim_start_matches("ZeroTier "),
+            n.ipv4.clone().or_else(|| n.ipv6.clone()).unwrap_or_else(|| "(ingen endnu)".into())
+        ),
+        None => format!(
+            "TheHome har meldt sig ind i ZeroTier-netværket {nwid}.\n\nGodkend nu noden i ZeroTier Central: åbn netværket, find medlemmet med adressen herunder, og sæt flueben ved godkendt (Auth).\n\nNode-adresse: {address}\n\nTryk Send for at gøre opsætningen færdig, før eller efter du har godkendt. Derefter kan TheHome nås på nodens ZeroTier-IP, port {port}."
+        ),
+    };
+    json!({ "type": "object", "description": text, "properties": {} })
+}
+
+/// Integer from a form, which may send it as a number or a string.
+fn int_field(v: &Value) -> Option<i64> {
+    v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)).or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
 pub struct ZeroTier {
     accounts: Mutex<HashMap<String, Arc<Account>>>,
+    links: Mutex<HashMap<String, Arc<Link>>>,
+    backend: Arc<dyn Backend>,
+}
+
+impl Default for ZeroTier {
+    fn default() -> Self {
+        Self::with_backend(Arc::new(node::Libzt))
+    }
 }
 
 impl ZeroTier {
+    /// With another ZeroTier than libzt, for tests.
+    pub fn with_backend(backend: Arc<dyn Backend>) -> Self {
+        Self { accounts: Mutex::default(), links: Mutex::default(), backend }
+    }
+
     fn account(&self, entry_id: &str) -> Result<Arc<Account>, Error> {
         self.accounts.lock().unwrap().get(entry_id).cloned().ok_or_else(|| Error::unavailable("opsætningen kører ikke"))
     }
+
+    fn link(&self, entry_id: &str) -> Option<Arc<Link>> {
+        self.links.lock().unwrap().get(entry_id).cloned()
+    }
+
+    /// Start the node and wait for it. Tests shorten the wait with `online_wait`.
+    async fn node_up(&self, host: &Host, wait: Option<f64>) -> Result<String, String> {
+        let wait = wait.filter(|w| *w > 0.0).map(Duration::from_secs_f64).unwrap_or(node::ONLINE_WAIT);
+        node::bring_up(self.backend.clone(), node::node_dir(&host.data_dir()), wait).await
+    }
+
+    async fn node_step(&self, host: &Host, flow: &Flow, v: Value) -> Result<FlowReply, Error> {
+        let port = int_field(&v["port"]).filter(|p| (1..=65535).contains(p)).map(|p| p as u16);
+        let schema = |d: Option<&str>| node_schema(port.unwrap_or_else(node::default_port), d);
+        let Some(network) = v["network_id"].as_str().and_then(node::parse_network_id) else {
+            return Ok(FlowReply::form_with_errors("node", schema(None), json!({ "network_id": "pattern" })));
+        };
+        let Some(port) = port else {
+            return Ok(FlowReply::form_with_errors("node", schema(None), json!({ "port": "invalid_port" })));
+        };
+        let address = match self.node_up(host, flow.data.get("online_wait").and_then(Value::as_f64)).await {
+            Ok(a) => a,
+            Err(e) => {
+                warn!("{e}");
+                let d = "Integrationens ZeroTier-node kom ikke online. Maskinen skal kunne nå internettet over UDP (ZeroTier bruger port 9993 og tilfældige porte). Prøv igen om lidt.";
+                return Ok(FlowReply::form_with_errors("node", schema(Some(d)), json!({ "base": "cannot_connect" })));
+            }
+        };
+        self.backend.join(network).map_err(Error::failed)?;
+        info!("node {address} meldte sig ind i netværket {}", node::network_hex(network));
+        let mut data = flow.data.clone();
+        data.insert("mode".into(), json!("node"));
+        data.insert("network_id".into(), json!(node::network_hex(network)));
+        data.insert("port".into(), json!(port));
+        data.insert("member".into(), json!(true));
+        data.insert("node_address".into(), json!(address));
+        let net = self.backend.network(network);
+        Ok(FlowReply::form("approve", approve_schema(&address, network, port, net.as_ref())).with_data(data).with_unique_id(node::network_hex(network)))
+    }
+
+    async fn central_step(&self, flow: &Flow, v: Value) -> Result<FlowReply, Error> {
+        let token = v["api_token"].as_str().unwrap_or_default().trim().to_string();
+        // a new token may belong to the other API, so always detect
+        let (client, networks) = match connect(|k| (k != "api").then(|| flow.data.get(k).and_then(Value::as_str).map(String::from)).flatten(), &token).await {
+            Ok(c) => c,
+            Err(e) => {
+                info!("{e}");
+                return Ok(FlowReply::form_with_errors("token", token_schema(), json!({ "base": error_code(&e) })));
+            }
+        };
+        if flow.source == "reauth" {
+            let mut data = flow.entry.as_ref().and_then(|e| e.data.as_object().cloned()).unwrap_or_default();
+            data.insert("api_token".into(), json!(token));
+            data.insert("api".into(), json!(client.version().as_str()));
+            return Ok(FlowReply::create("", Value::Object(data)));
+        }
+        if networks.is_empty() {
+            return Ok(FlowReply::abort("no_devices_found"));
+        }
+        let mut data = flow.data.clone();
+        data.insert("mode".into(), json!("central"));
+        data.insert("api_token".into(), json!(token));
+        data.insert("api".into(), json!(client.version().as_str()));
+        let user = client.user_id().await.ok().flatten();
+        let reply = if networks.len() == 1 {
+            FlowReply::create("ZeroTier", Value::Object(data))
+        } else {
+            let all: Vec<String> = networks.iter().map(|n| n.id.clone()).collect();
+            FlowReply::form("networks", networks_schema(&networks, &all)).with_data(data)
+        };
+        Ok(match user {
+            Some(u) => reply.with_unique_id(u),
+            None => reply,
+        })
+    }
+
+    async fn setup_node(&self, host: &Host, entry: &Entry) -> Result<(), Error> {
+        let entry_id = entry.entry_id.clone();
+        let network = entry.get_str("network_id").and_then(node::parse_network_id).ok_or_else(|| Error::invalid("netværks-id mangler"))?;
+        let port = entry.get("port").and_then(int_field).filter(|p| (1..=65535).contains(p)).map(|p| p as u16).unwrap_or_else(node::default_port);
+        let extra_ports = match entry.get("extra_ports") {
+            Some(Value::Array(a)) => a.iter().filter_map(int_field).filter(|p| (1..=65535).contains(p)).map(|p| p as u16).collect(),
+            Some(Value::String(s)) => node::parse_ports(s).unwrap_or_default(),
+            _ => vec![],
+        };
+        let address = self.node_up(host, entry.get_f64("online_wait")).await.map_err(Error::not_ready)?;
+        let secs = |k: &str, d: Duration| entry.get_f64(k).filter(|s| *s >= 0.05).map(Duration::from_secs_f64).unwrap_or(d);
+        let settings = node::Settings {
+            network,
+            port,
+            extra_ports,
+            member: entry.get("member").and_then(Value::as_bool).unwrap_or(true),
+            poll: secs("poll_seconds", node::POLL),
+            approve_after: secs("approve_after_seconds", node::APPROVE_AFTER),
+            data: entry.data.clone(),
+            title: entry.title.clone(),
+        };
+        let link = Link::start(host.clone(), entry_id.clone(), self.backend.clone(), address, settings).await?;
+        if let Some(old) = self.links.lock().unwrap().insert(entry_id, link) {
+            old.stop();
+        }
+        Ok(())
+    }
+}
+
+fn is_node(entry: &Entry) -> bool {
+    entry.data.get("mode").and_then(Value::as_str) == Some("node")
 }
 
 #[async_trait]
 impl Integration for ZeroTier {
-    async fn config_flow(&self, _host: &Host, flow: Flow, step: &str, input: Option<Value>) -> Result<FlowReply, Error> {
+    async fn config_flow(&self, host: &Host, flow: Flow, step: &str, input: Option<Value>) -> Result<FlowReply, Error> {
+        let reauth_node = flow.source == "reauth" && flow.entry.as_ref().is_some_and(is_node);
         match (step, input) {
-            ("user", None) | ("reauth", None) => Ok(FlowReply::form("user", token_schema())),
-            ("user", Some(v)) => {
-                let token = v["api_token"].as_str().unwrap_or_default().trim().to_string();
-                // a new token may belong to the other API, so always detect
-                let (client, networks) = match connect(|k| (k != "api").then(|| flow.data.get(k).and_then(Value::as_str).map(String::from)).flatten(), &token).await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        info!("{e}");
-                        return Ok(FlowReply::form_with_errors("user", token_schema(), json!({ "base": error_code(&e) })));
-                    }
-                };
-                if flow.source == "reauth" {
-                    let mut data = flow.entry.as_ref().and_then(|e| e.data.as_object().cloned()).unwrap_or_default();
-                    data.insert("api_token".into(), json!(token));
-                    data.insert("api".into(), json!(client.version().as_str()));
-                    return Ok(FlowReply::create("", Value::Object(data)));
-                }
-                if networks.is_empty() {
-                    return Ok(FlowReply::abort("no_devices_found"));
-                }
-                let mut data = flow.data.clone();
-                data.insert("api_token".into(), json!(token));
-                data.insert("api".into(), json!(client.version().as_str()));
-                let user = client.user_id().await.ok().flatten();
-                if networks.len() == 1 {
-                    let reply = FlowReply::create("ZeroTier", Value::Object(data));
-                    return Ok(match user {
-                        Some(u) => reply.with_unique_id(u),
-                        None => reply,
-                    });
-                }
-                let all: Vec<String> = networks.iter().map(|n| n.id.clone()).collect();
-                let reply = FlowReply::form("networks", networks_schema(&networks, &all)).with_data(data);
-                Ok(match user {
-                    Some(u) => reply.with_unique_id(u),
-                    None => reply,
-                })
+            ("user", None) => Ok(FlowReply::menu("user", &[MENU_NODE, MENU_CENTRAL])),
+            // a menu choice arrives as {"next_step_id": ..}
+            ("user", Some(v)) if v.get("next_step_id").is_some() => match v["next_step_id"].as_str().unwrap_or_default() {
+                MENU_NODE | "node" => Ok(FlowReply::form("node", node_schema(node::default_port(), None))),
+                MENU_CENTRAL | "token" => Ok(FlowReply::form("token", token_schema())),
+                other => Err(Error::invalid(format!("ukendt valg {other}"))),
+            },
+            (MENU_NODE, None) | ("node", None) => Ok(FlowReply::form("node", node_schema(node::default_port(), None))),
+            (MENU_CENTRAL, None) | ("token", None) => Ok(FlowReply::form("token", token_schema())),
+            ("node", Some(v)) => self.node_step(host, &flow, v).await,
+            ("approve", _) => {
+                let network = flow.data.get("network_id").and_then(Value::as_str).and_then(node::parse_network_id).ok_or_else(|| Error::invalid("netværks-id mangler"))?;
+                let name = self.backend.network(network).map(|n| n.name);
+                Ok(FlowReply::create(&node::title(network, name.as_deref()), Value::Object(flow.data.clone())))
             }
+            // the node's identity is local, so there is nothing to sign in again with
+            ("reauth", None) if reauth_node => Ok(FlowReply::abort("not_supported")),
+            ("reauth", None) => Ok(FlowReply::form("token", token_schema())),
+            // "user" with a token is how v0.1 sent it
+            ("token", Some(v)) | ("user", Some(v)) => self.central_step(&flow, v).await,
             ("networks", Some(v)) => {
                 let token = flow.data.get("api_token").and_then(Value::as_str).unwrap_or_default();
                 let (_, networks) = connect(|k| flow.data.get(k).and_then(Value::as_str).map(String::from), token).await.map_err(Error::failed)?;
@@ -187,6 +359,18 @@ impl Integration for ZeroTier {
 
     async fn options_flow(&self, _host: &Host, flow: Flow, _step: &str, input: Option<Value>) -> Result<FlowReply, Error> {
         let Some(entry) = flow.entry.as_ref() else { return Ok(FlowReply::abort("unknown")) };
+        if is_node(entry) {
+            let port = entry.get("port").and_then(int_field).map(|p| p as u16).unwrap_or_else(node::default_port);
+            let extra: Vec<u16> = entry.get("extra_ports").and_then(Value::as_array).map(|a| a.iter().filter_map(int_field).map(|p| p as u16).collect()).unwrap_or_default();
+            let Some(v) = input else { return Ok(FlowReply::form("node_options", node_options_schema(port, &extra))) };
+            let Some(new_port) = int_field(&v["port"]).filter(|p| (1..=65535).contains(p)) else {
+                return Ok(FlowReply::form_with_errors("node_options", node_options_schema(port, &extra), json!({ "port": "invalid_port" })));
+            };
+            return match node::parse_ports(v["extra_ports"].as_str().unwrap_or_default()) {
+                Ok(ports) => Ok(FlowReply::create("", json!({ "port": new_port, "extra_ports": ports }))),
+                Err(_) => Ok(FlowReply::form_with_errors("node_options", node_options_schema(port, &extra), json!({ "extra_ports": "invalid_port" }))),
+            };
+        }
         let networks = match connect(|k| entry.get_str(k).map(String::from), entry.get_str("api_token").unwrap_or_default()).await.map(|c| c.1) {
             Ok(n) => n,
             Err(e) => {
@@ -205,6 +389,9 @@ impl Integration for ZeroTier {
     }
 
     async fn setup_entry(&self, host: &Host, entry: Entry) -> Result<(), Error> {
+        if is_node(&entry) {
+            return self.setup_node(host, &entry).await;
+        }
         let entry_id = entry.entry_id.clone();
         let token = entry.get_str("api_token").filter(|t| !t.is_empty()).ok_or_else(|| Error::auth_failed("API-token mangler"))?;
         // entries from v0.1.0 have no `api`; they find it here
@@ -243,6 +430,9 @@ impl Integration for ZeroTier {
     }
 
     async fn unload_entry(&self, _host: &Host, entry_id: &str) -> Result<(), Error> {
+        if let Some(l) = self.links.lock().unwrap().remove(entry_id) {
+            l.stop();
+        }
         if let Some(a) = self.accounts.lock().unwrap().remove(entry_id) {
             a.stop();
         }
@@ -250,6 +440,9 @@ impl Integration for ZeroTier {
     }
 
     async fn entity_service(&self, _host: &Host, entry_id: &str, entity_id: &str, service: &str, _data: Map<String, Value>) -> Result<(), Error> {
+        if let Some(l) = self.link(entry_id) {
+            return l.call_service(entity_id, service).await;
+        }
         self.account(entry_id)?.call_service(entity_id, service).await
     }
 
@@ -257,6 +450,9 @@ impl Integration for ZeroTier {
         let mut d = json!({ "data": entry.data, "options": entry.options });
         if d["data"].get("api_token").is_some() {
             d["data"]["api_token"] = json!("**REDACTED**");
+        }
+        if let Some(l) = self.link(&entry.entry_id) {
+            d["node"] = l.diagnostics();
         }
         if let Ok(a) = self.account(&entry.entry_id) {
             let s = a.state.lock().unwrap();

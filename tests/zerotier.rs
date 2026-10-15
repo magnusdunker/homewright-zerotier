@@ -152,8 +152,15 @@ async fn plugin_flow() {
     // New Central is tried first; on this mock it answers 401
     let start = json!({ "api_url": server.uri(), "api_v2_url": format!("{}/v2", server.uri()) });
 
+    // first a choice: this machine, or Central with a token
     let r = h.call("config_flow", json!({ "flow": flow("user", start.clone()), "step": "user", "input": null })).await.unwrap();
-    assert_eq!(r["result"]["type"], "form");
+    assert_eq!(r["result"]["type"], "menu");
+    assert_eq!(r["result"]["options"], json!(["Denne_maskine", "ZeroTier_Central_API-token"]));
+    let r = h
+        .call("config_flow", json!({ "flow": flow("user", start.clone()), "step": "user", "input": { "next_step_id": "ZeroTier_Central_API-token" } }))
+        .await
+        .unwrap();
+    assert_eq!(r["result"]["step_id"], "token");
     let keys: Vec<&String> = r["result"]["schema"]["properties"].as_object().unwrap().keys().collect();
     assert_eq!(keys, ["api_token"]);
 
