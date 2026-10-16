@@ -144,7 +144,9 @@ fn main() {
         // headers that newer standard libraries no longer pull in for free
         cpp.flag("-include").flag("stdexcept");
     }
-    for (k, v) in [("ZT_SDK", "1"), ("ZT_USE_MINIUPNPC", "1"), ("_USING_LWIP_DEFINITIONS_", "0"), ("OMIT_JSON_SUPPORT", "1"), ("ZTS_DISABLE_CENTRAL_API", "1")] {
+    // ZT_NO_PEER_METRICS: a peer's Prometheus counters can be left unset, and
+    // the first packet with a bad MAC then crashes the node; nothing reads them
+    for (k, v) in [("ZT_SDK", "1"), ("ZT_USE_MINIUPNPC", "1"), ("_USING_LWIP_DEFINITIONS_", "0"), ("OMIT_JSON_SUPPORT", "1"), ("ZTS_DISABLE_CENTRAL_API", "1"), ("ZT_NO_PEER_METRICS", "1")] {
         cpp.define(k, v);
     }
     for f in files(&zto.join("node"), "cpp") {
