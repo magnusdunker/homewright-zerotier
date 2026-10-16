@@ -1,6 +1,6 @@
 [package]
 name = "thehome-zerotier"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "MIT"
 description = "ZeroTier til TheHome: TheHome som medlem af et ZeroTier-netværk, og netværk og medlemmer fra ZeroTier Central"

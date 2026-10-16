@@ -172,4 +172,12 @@ fn main() {
             println!("cargo:rustc-link-lib={lib}");
         }
     }
+    // libzt starts its own threads with the default stack, which on musl is
+    // 128 KiB. ZeroTier keeps 64 KiB buffers and whole packets on the stack,
+    // so a thread ran over its stack into the next one and the node crashed
+    // somewhere else each time. musl takes a larger default from the
+    // binary's PT_GNU_STACK size.
+    if target.contains("musl") {
+        println!("cargo:rustc-link-arg-bins=-Wl,-z,stack-size=4194304");
+    }
 }
