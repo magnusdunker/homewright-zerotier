@@ -1,5 +1,5 @@
 //! Model and API tests against a fake Central, and the plugin driven over a
-//! pipe the way TheHome drives it.
+//! pipe the way HomewrightHQ drives it.
 
 mod host;
 

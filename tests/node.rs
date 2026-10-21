@@ -1,4 +1,4 @@
-//! "This machine" mode, driven over a pipe the way TheHome drives it, with a
+//! "This machine" mode, driven over a pipe the way HomewrightHQ drives it, with a
 //! fake ZeroTier in place of libzt so it runs without the internet.
 
 mod host;
@@ -249,7 +249,7 @@ async fn node_runtime() {
     assert_eq!(a["node_address"], ADDR);
     wait_until("approve issue", || h.rec.lock().unwrap().issues.contains(&"approve".to_string())).await;
 
-    // approved: connected, forwarding TheHome's port and the extra one, issue gone, title with the name
+    // approved: connected, forwarding HomewrightHQ's port and the extra one, issue gone, title with the name
     fake.set("OK", "Hjem", Some("10.147.17.5"));
     wait_until("connected", || h.state_of(&uid("connected")).is_some_and(|s| s.0 == "on")).await;
     wait_until("forwards", || fake.forwards().len() == 2).await;
@@ -314,7 +314,7 @@ async fn left_entry_stays_out_and_port_errors_show() {
     let (_, a) = h.state_of(&uid("status")).unwrap();
     assert_eq!(a["forward_errors"], json!(["10.147.17.5:1883: address in use"]));
 
-    // offline at startup: not ready, so TheHome retries
+    // offline at startup: not ready, so HomewrightHQ retries
     let fake2 = Fake::default();
     let h2 = host::FakeHost::start(thehome_zerotier::ZeroTier::with_backend(Arc::new(fake2)));
     let data = json!({ "mode": "node", "network_id": NET, "port": 8124, "online_wait": 0.2 });

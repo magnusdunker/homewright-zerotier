@@ -1,9 +1,9 @@
-//! ZeroTier for TheHome, as an external integration. Two ways to set it up:
+//! ZeroTier for HomewrightHQ, as an external integration. Two ways to set it up:
 //!
 //! - This machine (the default): the plugin is itself a ZeroTier node,
 //!   built in with libzt. The user enters a network id and approves the
 //!   node's address in ZeroTier Central. Connections to the node's ZeroTier
-//!   address are forwarded to TheHome, so TheHome can be reached over
+//!   address are forwarded to HomewrightHQ, so HomewrightHQ can be reached over
 //!   ZeroTier with nothing installed on the machine. See [`node`].
 //! - ZeroTier Central: with an API token, networks and their members as
 //!   devices, with a switch that authorizes each member.
@@ -28,7 +28,7 @@ use node::{Backend, Link};
 pub const DOMAIN: &str = "zerotier";
 const POLL: Duration = Duration::from_secs(60);
 
-/// Logging to TheHome's log through stderr.
+/// Logging to HomewrightHQ's log through stderr.
 #[doc(hidden)]
 pub fn emit(level: &str, message: String) {
     thehome_plugin::log(level, message);
@@ -117,7 +117,7 @@ fn selection(entry: &Entry) -> Option<Vec<String>> {
     str_list(&entry.options["networks"]).or_else(|| entry.get("networks").and_then(str_list))
 }
 
-/// Menu choices. TheHome shows a choice without a translation with `_` and
+/// Menu choices. HomewrightHQ shows a choice without a translation with `_` and
 /// `-` as spaces.
 const MENU_NODE: &str = "Denne_maskine";
 const MENU_CENTRAL: &str = "ZeroTier_Central_API-token";
@@ -132,8 +132,8 @@ fn node_schema(port: u16, description: Option<&str>) -> Value {
                 "description": "De 16 tegn, netværket har i ZeroTier Central, f.eks. 8056c2e21c000001"
             },
             "port": {
-                "type": "integer", "title": "TheHomes port", "default": port, "minimum": 1, "maximum": 65535,
-                "description": "Forbindelser til TheHomes ZeroTier-adresse på denne port sendes videre til TheHome"
+                "type": "integer", "title": "HomewrightHQ's port", "default": port, "minimum": 1, "maximum": 65535,
+                "description": "Forbindelser til HomewrightHQ's ZeroTier-adresse på denne port sendes videre til HomewrightHQ"
             }
         }
     });
@@ -150,8 +150,8 @@ fn node_options_schema(port: u16, extra: &[u16]) -> Value {
         "required": ["port"],
         "properties": {
             "port": {
-                "type": "integer", "title": "TheHomes port", "default": port, "minimum": 1, "maximum": 65535,
-                "description": "Forbindelser til TheHomes ZeroTier-adresse på denne port sendes videre til TheHome"
+                "type": "integer", "title": "HomewrightHQ's port", "default": port, "minimum": 1, "maximum": 65535,
+                "description": "Forbindelser til HomewrightHQ's ZeroTier-adresse på denne port sendes videre til HomewrightHQ"
             },
             "extra_ports": {
                 "type": "string", "title": "Ekstra porte", "default": extra.join(", "),
@@ -165,12 +165,12 @@ fn approve_schema(address: &str, network: u64, port: u16, net: Option<&zt::NetIn
     let nwid = node::network_hex(network);
     let text = match net.filter(|n| n.status == "OK") {
         Some(n) => format!(
-            "TheHome er med i netværket {} med ZeroTier-IP {}.\n\nTryk Send for at gøre opsætningen færdig. TheHome kan nås på den IP, port {port}.",
+            "HomewrightHQ er med i netværket {} med ZeroTier-IP {}.\n\nTryk Send for at gøre opsætningen færdig. HomewrightHQ kan nås på den IP, port {port}.",
             node::title(network, Some(&n.name)).trim_start_matches("ZeroTier "),
             n.ipv4.clone().or_else(|| n.ipv6.clone()).unwrap_or_else(|| "(ingen endnu)".into())
         ),
         None => format!(
-            "TheHome har meldt sig ind i ZeroTier-netværket {nwid}.\n\nGodkend nu noden i ZeroTier Central: åbn netværket, find medlemmet med adressen herunder, og sæt flueben ved godkendt (Auth).\n\nNode-adresse: {address}\n\nTryk Send for at gøre opsætningen færdig, før eller efter du har godkendt. Derefter kan TheHome nås på nodens ZeroTier-IP, port {port}."
+            "HomewrightHQ har meldt sig ind i ZeroTier-netværket {nwid}.\n\nGodkend nu noden i ZeroTier Central: åbn netværket, find medlemmet med adressen herunder, og sæt flueben ved godkendt (Auth).\n\nNode-adresse: {address}\n\nTryk Send for at gøre opsætningen færdig, før eller efter du har godkendt. Derefter kan HomewrightHQ nås på nodens ZeroTier-IP, port {port}."
         ),
     };
     json!({ "type": "object", "description": text, "properties": {} })

@@ -1,7 +1,7 @@
 //! Forwards TCP connections that arrive on a ZeroTier address to a port on
-//! this machine, e.g. TheHome's web server. Traffic to the ZeroTier address
+//! this machine, e.g. HomewrightHQ's web server. Traffic to the ZeroTier address
 //! ends in the plugin's userspace stack, so without this nothing would reach
-//! TheHome. Plain TCP, so WebSockets pass through too.
+//! HomewrightHQ. Plain TCP, so WebSockets pass through too.
 //!
 //! One thread listens, and one thread per connection moves bytes both ways.
 //! lwIP sockets must stay on one thread, so each connection polls the

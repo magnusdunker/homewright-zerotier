@@ -1,30 +1,30 @@
-# ZeroTier til TheHome
+# ZeroTier til HomewrightHQ
 
-En ekstern integration til [TheHome](https://github.com/magnusdunker/thehome), der kan to ting:
+En ekstern integration til [HomewrightHQ](https://github.com/magnusdunker/homewrighthq), der kan to ting:
 
-- **Denne maskine** (standard): TheHome bliver selv medlem af et ZeroTier-netværk, så du kan nå TheHome over ZeroTier. Du skriver kun netværks-id'et og godkender TheHome i ZeroTier Central, som du plejer. Der skal ikke installeres noget på maskinen, og der skal intet API-token til.
+- **Denne maskine** (standard): HomewrightHQ bliver selv medlem af et ZeroTier-netværk, så du kan nå HomewrightHQ over ZeroTier. Du skriver kun netværks-id'et og godkender HomewrightHQ i ZeroTier Central, som du plejer. Der skal ikke installeres noget på maskinen, og der skal intet API-token til.
 - **ZeroTier Central (API-token)**: viser dine netværk og deres medlemmer fra ZeroTier Central, med en kontakt, der godkender hvert medlem.
 
 ## Installation
 
-I TheHome: **Indstillinger → Integrationer → Fra GitHub**. Indsæt
+I HomewrightHQ: **Indstillinger → Integrationer → Fra GitHub**. Indsæt
 
 ```
-https://github.com/magnusdunker/thehome-zerotier
+https://github.com/magnusdunker/homewrighthq-zerotier
 ```
 
 og tryk **Installér**. Tilføj derefter **ZeroTier** under **Tilføj integration**, og vælg **Denne maskine** eller **ZeroTier Central API token**.
 
 ## Denne maskine
 
-1. Skriv netværks-id'et (16 tegn, står under netværket i ZeroTier Central) og den port, TheHome kører på. Porten er udfyldt med TheHomes egen, hvis TheHome kører med `THEHOME_PORT` (som i Docker-installationen), og ellers 8123.
+1. Skriv netværks-id'et (16 tegn, står under netværket i ZeroTier Central) og den port, HomewrightHQ kører på. Porten er udfyldt med HomewrightHQ's egen, hvis HomewrightHQ kører med `THEHOME_PORT` (som i Docker-installationen), og ellers 8123.
 2. Integrationen starter sin ZeroTier-node og melder den ind i netværket. Formularen viser nodens adresse, 10 tegn, f.eks. `366859034f`.
 3. Åbn netværket i ZeroTier Central, find medlemmet med den adresse, og godkend det.
-4. Når noden er godkendt, kan TheHome nås på nodens ZeroTier-IP og porten, f.eks. `http://10.147.17.5:8124`.
+4. Når noden er godkendt, kan HomewrightHQ nås på nodens ZeroTier-IP og porten, f.eks. `http://10.147.17.5:8124`.
 
 ZeroTier er bygget ind i integrationen med [libzt](https://github.com/zerotier/libzt), som har sin egen TCP/IP-stak. Den skal ikke have et netværkskort, root eller ekstra rettigheder i Docker. Nodens identitet ligger i integrationens datamappe, så adressen er den samme efter genstart og opdateringer.
 
-Fordi forbindelserne ender i integrationen og ikke i maskinens netværk, sender integrationen dem videre til TheHome på `127.0.0.1` og porten. Det er almindelig TCP, så WebSockets virker også. Under integrationens indstillinger kan du ændre porten og tilføje flere porte på maskinen, der også skal kunne nås, f.eks. `1883` for MQTT.
+Fordi forbindelserne ender i integrationen og ikke i maskinens netværk, sender integrationen dem videre til HomewrightHQ på `127.0.0.1` og porten. Det er almindelig TCP, så WebSockets virker også. Under integrationens indstillinger kan du ændre porten og tilføje flere porte på maskinen, der også skal kunne nås, f.eks. `1883` for MQTT.
 
 Maskinen skal kunne nå internettet over UDP. ZeroTier bruger port 9993 og tilfældige porte.
 
@@ -38,9 +38,9 @@ Du får to enheder:
   - **Medlem af netværket**: en kontakt, der melder noden ud og ind. Valget huskes efter genstart
   - **Aktive forbindelser**: hvor mange forbindelser der er videresendt lige nu
 
-Venter noden mere end et minut på godkendelse, viser TheHome et problem med adressen, der skal godkendes. Det forsvinder, når noden er godkendt.
+Venter noden mere end et minut på godkendelse, viser HomewrightHQ et problem med adressen, der skal godkendes. Det forsvinder, når noden er godkendt.
 
-Opsætningens navn får netværkets navn, når noden er godkendt. Fjerner du opsætningen i TheHome, er noden stadig medlem i ZeroTier Central. Fjern den der, hvis den ikke skal bruges igen.
+Opsætningens navn får netværkets navn, når noden er godkendt. Fjerner du opsætningen i HomewrightHQ, er noden stadig medlem i ZeroTier Central. Fjern den der, hvis den ikke skal bruges igen.
 
 ## ZeroTier Central (API-token)
 
@@ -71,21 +71,21 @@ Data hentes hvert minut. Nye medlemmer får entities ved næste hentning. Medlem
 
 ZeroTier skriver selv, at tidspunkterne for seneste kontakt kan nulstilles uden varsel. Så viser **Online** slukket og **Sidst set** ukendt, indtil medlemmet har været i kontakt igen.
 
-Afviser ZeroTier tokenet, viser TheHome det under problemer, og integrationen kan godkendes igen med et nyt token.
+Afviser ZeroTier tokenet, viser HomewrightHQ det under problemer, og integrationen kan godkendes igen med et nyt token.
 
 ## Udvikling
 
-Bygget i Rust på SDK'en `thehome-plugin` fra [thehome-example-integration-rust](https://github.com/magnusdunker/thehome-example-integration-rust).
+Bygget i Rust på SDK'en `thehome-plugin` fra [thehome-example-integration-rust](https://github.com/magnusdunker/homewrighthq-example-integration-rust).
 
 - `src/zt.rs`: libzt, ZeroTier som bibliotek
-- `src/proxy.rs`: videresendelse fra ZeroTier-adressen til TheHome
+- `src/proxy.rs`: videresendelse fra ZeroTier-adressen til HomewrightHQ
 - `src/node.rs`: "Denne maskine": noden, netværket og entities
 - `src/api.rs`: ZeroTier Central-API'et
 - `src/model.rs`: netværk og medlemmer fra Central, og hvordan de bliver til tilstande
-- `src/lib.rs`: opsætningen og forbindelsen til TheHome
+- `src/lib.rs`: opsætningen og forbindelsen til HomewrightHQ
 - `vendor/libzt/`: libzts kildekode, se `vendor/libzt/VENDORED.md`
 - `build.rs`: bygger libzt med `cc`
-- `tests/`: tests mod en falsk ZeroTier og en falsk ZeroTier Central, og en falsk TheHome i `tests/host`
+- `tests/`: tests mod en falsk ZeroTier og en falsk ZeroTier Central, og en falsk HomewrightHQ i `tests/host`
 - `examples/adhoc.rs`: en rigtig test af videresendelsen over et ZeroTier ad-hoc-netværk, der ikke skal godkendes
 
 ```

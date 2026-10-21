@@ -1,6 +1,6 @@
 //! "This machine" mode: the plugin is itself a ZeroTier node (libzt), joins
 //! one network per entry, and forwards connections that arrive on its
-//! ZeroTier address to TheHome. The user approves the node's address in
+//! ZeroTier address to HomewrightHQ. The user approves the node's address in
 //! ZeroTier Central, as for any other device.
 
 use std::net::SocketAddr;
@@ -68,7 +68,7 @@ pub fn parse_ports(s: &str) -> Result<Vec<u16>, String> {
     Ok(out)
 }
 
-/// The port TheHome listens on, as the form's default.
+/// The port HomewrightHQ listens on, as the form's default.
 pub fn default_port() -> u16 {
     std::env::var("THEHOME_PORT").ok().and_then(|p| p.trim().parse().ok()).unwrap_or(8123)
 }
@@ -434,7 +434,7 @@ impl Link {
                         "warning",
                         &format!("ZeroTier: godkend node {}", self.address),
                         &format!(
-                            "TheHome har meldt sig ind i ZeroTier-netværket {nwid}, men er ikke godkendt endnu. Åbn netværket i ZeroTier Central, find medlemmet {}, og godkend det.",
+                            "HomewrightHQ har meldt sig ind i ZeroTier-netværket {nwid}, men er ikke godkendt endnu. Åbn netværket i ZeroTier Central, find medlemmet {}, og godkend det.",
                             self.address
                         ),
                     )

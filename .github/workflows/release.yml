@@ -1,5 +1,5 @@
 # Bygger en binær pr. platform, når et tag som v1.2.3 pushes, og lægger dem
-# sammen med thehome.json på en GitHub-release. TheHome installerer derfra.
+# sammen med thehome.json på en GitHub-release. HomewrightHQ installerer derfra.
 #
 # libzt (ZeroTier som bibliotek) er C og C++. Linux-binærerne bygges med en
 # musl-krydskompiler med C++ i messense/rust-musl-cross, så de er statiske.

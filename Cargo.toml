@@ -3,7 +3,7 @@ name = "thehome-zerotier"
 version = "0.2.2"
 edition = "2021"
 license = "MIT"
-description = "ZeroTier til TheHome: TheHome som medlem af et ZeroTier-netværk, og netværk og medlemmer fra ZeroTier Central"
+description = "ZeroTier til HomewrightHQ: HomewrightHQ som medlem af et ZeroTier-netværk, og netværk og medlemmer fra ZeroTier Central"
 publish = false
 
 [[bin]]
@@ -11,7 +11,7 @@ name = "zerotier"
 path = "src/main.rs"
 
 [dependencies]
-thehome-plugin = { git = "https://github.com/magnusdunker/thehome-example-integration-rust", rev = "a8f05c1859f6689b2a31d2188593eb872408385e" }
+thehome-plugin = { git = "https://github.com/magnusdunker/homewrighthq-example-integration-rust", rev = "a8f05c1859f6689b2a31d2188593eb872408385e" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
